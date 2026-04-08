@@ -297,6 +297,7 @@ def calculate_plan(
             "Salario Base":    current_salary,
             "Prima":           extra_prima,
             "Adelanto/Ces.":   extra_adelanto,
+            "Ingreso Total":   ingreso_total,   # ← era "ingreso_total"
             "Valor Cuota":     cuota_val,
             "Valor Abono":     valor_abono,
             "Valor Acumulado": total_pagado,
