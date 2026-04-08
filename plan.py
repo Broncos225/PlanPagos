@@ -232,38 +232,44 @@ def calculate_plan(
     aumento_salario_pct: float,   # % de aumento cada 6 meses
     aumento_cada: int,             # cada cuántos meses aplica aumento
     porcentaje_ingreso: float,     # % del ingreso a destinar al pago
-    cuota_fija: float | None,      # si None → usa porcentaje_ingreso o % deuda
-    modo_base_cuota: str = "ingreso",  # "ingreso" | "deuda"
-    porcentaje_deuda: float = 0.0,     # % del saldo restante a pagar cada mes
+    cuota_fija: float | None,      # si None → usa porcentaje_ingreso
+    modo_base_cuota: str = "ingreso",  # "ingreso" | "deuda_nivelada"
 ):
     """
     Core calculation. Returns (rows, summary).
+
+    modo_base_cuota:
+      "ingreso"        → cuota = % del ingreso total del mes
+      "deuda_nivelada" → cuota = saldo_tras_abonos / cuotas_restantes
+                         Prima y adelantos abonan primero al saldo,
+                         luego la cuota base se recalcula automáticamente.
     """
-    income_sched = []
     current_salary = base_income
     saldo = valor_total
 
     rows = []
-    total_pagado = 0.0
-    total_prima  = 0.0
+    total_pagado   = 0.0
+    total_prima    = 0.0
     total_adelanto = 0.0
+    cuota_anterior = None  # para mostrar variación en notas
 
     for i in range(n_cuotas):
         if saldo <= 0:
             break
 
+        cuotas_restantes = n_cuotas - i   # incluye la cuota actual
         cuota_date = add_months(start_date, i)
 
         # Aumento de salario cada N meses
         if i > 0 and aumento_cada > 0 and i % aumento_cada == 0:
             current_salary *= (1 + aumento_salario_pct / 100)
 
-        # Prima
+        # Prima del mes
         extra_prima = 0.0
         if prima_months and cuota_date.month in prima_months:
             extra_prima = current_salary * (prima_pct / 100)
 
-        # Adelantos
+        # Adelantos del mes
         extra_adelanto = 0.0
         note_parts = []
         for adv in adelantos:
@@ -271,31 +277,72 @@ def calculate_plan(
                 extra_adelanto += adv["valor"]
                 note_parts.append(f"Adelanto {fmt_cop(adv['valor'])}")
 
-        ingreso_total = current_salary + extra_prima + extra_adelanto
-
-        # Cuota
-        if cuota_fija is not None and cuota_fija > 0:
-            cuota_val = cuota_fija
-        elif modo_base_cuota == "deuda":
-            # % del saldo actual: cuota decrece a medida que se paga
-            cuota_val = saldo * (porcentaje_deuda / 100)
-        else:
-            cuota_val = ingreso_total * (porcentaje_ingreso / 100)
-
-        # Última cuota no supera el saldo
-        cuota_val = min(cuota_val, saldo)
-        saldo_anterior = saldo
-        saldo -= cuota_val
-        total_pagado   += cuota_val
-        total_prima    += extra_prima
-        total_adelanto += extra_adelanto
-
         if extra_prima > 0:
             note_parts.insert(0, f"Prima {fmt_cop(extra_prima)}")
 
-        valor_abono = cuota_val + extra_prima + extra_adelanto
+        ingreso_total = current_salary + extra_prima + extra_adelanto
 
+        # ── Abono de prima y adelantos al saldo (modo deuda nivelada) ──
+        if modo_base_cuota == "deuda_nivelada":
+            abono_extra = min(extra_prima + extra_adelanto, saldo)
+            saldo -= abono_extra
+            total_pagado   += abono_extra
+            total_prima    += extra_prima
+            total_adelanto += extra_adelanto
+
+            if saldo <= 0:
+                # La prima/adelanto liquidó la deuda
+                cuota_val = 0.0
+                if note_parts:
+                    note_parts.append("✅ Deuda liquidada con este abono")
+                rows.append({
+                    "Cuota #":         i + 1,
+                    "Fecha":           cuota_date.strftime("%b %Y"),
+                    "fecha_dt":        cuota_date,
+                    "Salario Base":    current_salary,
+                    "Prima":           extra_prima,
+                    "Adelanto/Ces.":   extra_adelanto,
+                    "Ingreso Total":   ingreso_total,
+                    "Valor Cuota":     0.0,
+                    "% s/Ingreso":     0.0,
+                    "Valor Abono":     abono_extra,
+                    "Valor Acumulado": total_pagado,
+                    "Saldo Restante":  0.0,
+                    "Notas":           ", ".join(note_parts),
+                })
+                break
+
+            # Cuota nivelada: saldo restante / cuotas que quedan
+            cuota_val = saldo / cuotas_restantes
+            cuota_val = min(cuota_val, saldo)
+
+            # Nota si la cuota bajó respecto al mes anterior
+            if cuota_anterior is not None and (extra_prima > 0 or extra_adelanto > 0):
+                diferencia = cuota_anterior - cuota_val
+                if diferencia > 1:
+                    note_parts.append(f"↓ Cuota bajó {fmt_cop(diferencia)}")
+
+            saldo -= cuota_val
+            total_pagado += cuota_val
+            # prima/adelanto ya sumados arriba
+
+        else:
+            # ── Modo ingreso / cuota fija ──────────────────────────────
+            total_prima    += extra_prima
+            total_adelanto += extra_adelanto
+
+            if cuota_fija is not None and cuota_fija > 0:
+                cuota_val = cuota_fija
+            else:
+                cuota_val = ingreso_total * (porcentaje_ingreso / 100)
+
+            cuota_val = min(cuota_val, saldo)
+            saldo -= cuota_val
+            total_pagado += cuota_val
+
+        cuota_anterior = cuota_val
         pct_cuota_sobre_ingreso = (cuota_val / ingreso_total * 100) if ingreso_total > 0 else 0.0
+        valor_abono = cuota_val + (extra_prima + extra_adelanto if modo_base_cuota != "deuda_nivelada" else 0)
 
         rows.append({
             "Cuota #":         i + 1,
@@ -403,31 +450,34 @@ with st.sidebar:
     st.markdown("### 💵 Cuota mensual")
     modo_cuota = st.radio(
         "Calcular cuota como:",
-        ["% del ingreso total", "% del saldo restante", "Cuota fija"],
+        ["% del ingreso total", "Cuota nivelada por deuda", "Cuota fija"],
         horizontal=True,
+        help=(
+            "% del ingreso: la cuota depende de tu salario cada mes. "
+            "Cuota nivelada: se divide el saldo entre las cuotas restantes; "
+            "cuando entra una prima o adelanto se abona primero al saldo y la cuota baja automáticamente. "
+            "Cuota fija: monto fijo sin variación."
+        ),
     )
     if modo_cuota == "% del ingreso total":
         pct_ingreso = st.slider("% del ingreso destinado al pago", 5, 100, 40, step=5)
-        pct_deuda = 0.0
         cuota_fija_val = None
         modo_base = "ingreso"
-    elif modo_cuota == "% del saldo restante":
-        pct_deuda = st.slider(
-            "% del saldo restante a pagar cada mes", 1, 100, 10, step=1,
-            help="La cuota se recalcula cada mes sobre el saldo pendiente: decrece conforme la deuda baja."
+    elif modo_cuota == "Cuota nivelada por deuda":
+        cuota_base_est = valor_total / n_cuotas if n_cuotas > 0 else 0
+        st.caption(
+            f"📌 Cuota inicial estimada: **{fmt_cop(cuota_base_est)}** "
+            f"({fmt_cop(valor_total)} ÷ {n_cuotas} cuotas). "
+            f"Baja automáticamente cuando entran primas o adelantos."
         )
-        # Preview cuota inicial
-        cuota_inicial_est = valor_total * (pct_deuda / 100)
-        st.caption(f"📌 Cuota estimada mes 1: **{fmt_cop(cuota_inicial_est)}**")
         pct_ingreso = 0
         cuota_fija_val = None
-        modo_base = "deuda"
+        modo_base = "deuda_nivelada"
     else:
         cuota_fija_val = st.number_input(
             "Cuota fija mensual ($)", min_value=0.0, value=400_000.0, step=10_000.0, format="%.0f"
         )
         pct_ingreso = 0
-        pct_deuda = 0.0
         modo_base = "ingreso"
 
     st.markdown("---")
@@ -455,19 +505,18 @@ if num_adelantos > 0:
 
 # ─── CALCULATION (reactive) ──────────────────────────────────────────────────
 rows, summary = calculate_plan(
-    valor_total       = valor_total,
-    start_date        = start_date,
-    n_cuotas          = n_cuotas,
-    base_income       = base_income,
-    prima_pct         = prima_pct,
-    prima_months      = prima_months,
-    adelantos         = adelantos,
+    valor_total         = valor_total,
+    start_date          = start_date,
+    n_cuotas            = n_cuotas,
+    base_income         = base_income,
+    prima_pct           = prima_pct,
+    prima_months        = prima_months,
+    adelantos           = adelantos,
     aumento_salario_pct = aumento_pct,
-    aumento_cada      = aumento_cada,
-    porcentaje_ingreso = pct_ingreso,
-    cuota_fija        = cuota_fija_val,
-    modo_base_cuota   = modo_base,
-    porcentaje_deuda  = pct_deuda,
+    aumento_cada        = aumento_cada,
+    porcentaje_ingreso  = pct_ingreso,
+    cuota_fija          = cuota_fija_val,
+    modo_base_cuota     = modo_base,
 )
 
 # ─── KPI CARDS ──────────────────────────────────────────────────────────────
