@@ -288,18 +288,20 @@ def calculate_plan(
         if extra_prima > 0:
             note_parts.insert(0, f"Prima {fmt_cop(extra_prima)}")
 
+        valor_abono = cuota_val + extra_prima + extra_adelanto
+
         rows.append({
-            "Cuota #":        i + 1,
-            "Fecha":          cuota_date.strftime("%b %Y"),
-            "fecha_dt":       cuota_date,
-            "Salario Base":   current_salary,
-            "Prima":          extra_prima,
-            "Adelanto/Ces.":  extra_adelanto,
-            "Ingreso Total":  ingreso_total,
-            "Valor Cuota":    cuota_val,
-            "Saldo Anterior": saldo_anterior,
-            "Saldo Restante": max(saldo, 0),
-            "Notas":          ", ".join(note_parts) if note_parts else "—",
+            "Cuota #":         i + 1,
+            "Fecha":           cuota_date.strftime("%b %Y"),
+            "fecha_dt":        cuota_date,
+            "Salario Base":    current_salary,
+            "Prima":           extra_prima,
+            "Adelanto/Ces.":   extra_adelanto,
+            "Valor Cuota":     cuota_val,
+            "Valor Abono":     valor_abono,
+            "Valor Acumulado": total_pagado,
+            "Saldo Restante":  max(saldo, 0),
+            "Notas":           ", ".join(note_parts) if note_parts else "—",
         })
 
         if saldo <= 0:
@@ -501,8 +503,8 @@ if rows:
     df = pd.DataFrame(rows)
 
     # Format currency columns for display
-    currency_cols = ["Salario Base", "Prima", "Adelanto/Ces.", "Ingreso Total",
-                     "Valor Cuota", "Saldo Anterior", "Saldo Restante"]
+    currency_cols = ["Salario Base", "Prima", "Adelanto/Ces.",
+                     "Valor Cuota", "Valor Abono", "Valor Acumulado", "Saldo Restante"]
     df_display = df.drop(columns=["fecha_dt"], errors="ignore").copy()
     for col in currency_cols:
         df_display[col] = df_display[col].apply(fmt_cop)
@@ -512,16 +514,16 @@ if rows:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Cuota #":        st.column_config.NumberColumn(width="small"),
-            "Fecha":          st.column_config.TextColumn(width="small"),
-            "Salario Base":   st.column_config.TextColumn(),
-            "Prima":          st.column_config.TextColumn(),
-            "Adelanto/Ces.":  st.column_config.TextColumn(),
-            "Ingreso Total":  st.column_config.TextColumn(),
-            "Valor Cuota":    st.column_config.TextColumn(),
-            "Saldo Anterior": st.column_config.TextColumn(),
-            "Saldo Restante": st.column_config.TextColumn(),
-            "Notas":          st.column_config.TextColumn(width="medium"),
+            "Cuota #":         st.column_config.NumberColumn(width="small"),
+            "Fecha":           st.column_config.TextColumn(width="small"),
+            "Salario Base":    st.column_config.TextColumn(),
+            "Prima":           st.column_config.TextColumn(),
+            "Adelanto/Ces.":   st.column_config.TextColumn(),
+            "Valor Cuota":     st.column_config.TextColumn(),
+            "Valor Abono":     st.column_config.TextColumn(),
+            "Valor Acumulado": st.column_config.TextColumn(),
+            "Saldo Restante":  st.column_config.TextColumn(),
+            "Notas":           st.column_config.TextColumn(width="medium"),
         }
     )
 
