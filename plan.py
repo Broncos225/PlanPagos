@@ -232,7 +232,9 @@ def calculate_plan(
     aumento_salario_pct: float,   # % de aumento cada 6 meses
     aumento_cada: int,             # cada cuántos meses aplica aumento
     porcentaje_ingreso: float,     # % del ingreso a destinar al pago
-    cuota_fija: float | None,      # si None → usa porcentaje_ingreso
+    cuota_fija: float | None,      # si None → usa porcentaje_ingreso o % deuda
+    modo_base_cuota: str = "ingreso",  # "ingreso" | "deuda"
+    porcentaje_deuda: float = 0.0,     # % del saldo restante a pagar cada mes
 ):
     """
     Core calculation. Returns (rows, summary).
@@ -274,6 +276,9 @@ def calculate_plan(
         # Cuota
         if cuota_fija is not None and cuota_fija > 0:
             cuota_val = cuota_fija
+        elif modo_base_cuota == "deuda":
+            # % del saldo actual: cuota decrece a medida que se paga
+            cuota_val = saldo * (porcentaje_deuda / 100)
         else:
             cuota_val = ingreso_total * (porcentaje_ingreso / 100)
 
@@ -290,6 +295,8 @@ def calculate_plan(
 
         valor_abono = cuota_val + extra_prima + extra_adelanto
 
+        pct_cuota_sobre_ingreso = (cuota_val / ingreso_total * 100) if ingreso_total > 0 else 0.0
+
         rows.append({
             "Cuota #":         i + 1,
             "Fecha":           cuota_date.strftime("%b %Y"),
@@ -297,8 +304,9 @@ def calculate_plan(
             "Salario Base":    current_salary,
             "Prima":           extra_prima,
             "Adelanto/Ces.":   extra_adelanto,
-            "Ingreso Total":   ingreso_total,   # ← era "ingreso_total"
+            "Ingreso Total":   ingreso_total,
             "Valor Cuota":     cuota_val,
+            "% s/Ingreso":     round(pct_cuota_sobre_ingreso, 1),
             "Valor Abono":     valor_abono,
             "Valor Acumulado": total_pagado,
             "Saldo Restante":  max(saldo, 0),
@@ -393,15 +401,34 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 💵 Cuota mensual")
-    modo_cuota = st.radio("Calcular cuota como:", ["% del ingreso total", "Cuota fija"], horizontal=True)
+    modo_cuota = st.radio(
+        "Calcular cuota como:",
+        ["% del ingreso total", "% del saldo restante", "Cuota fija"],
+        horizontal=True,
+    )
     if modo_cuota == "% del ingreso total":
         pct_ingreso = st.slider("% del ingreso destinado al pago", 5, 100, 40, step=5)
+        pct_deuda = 0.0
         cuota_fija_val = None
+        modo_base = "ingreso"
+    elif modo_cuota == "% del saldo restante":
+        pct_deuda = st.slider(
+            "% del saldo restante a pagar cada mes", 1, 100, 10, step=1,
+            help="La cuota se recalcula cada mes sobre el saldo pendiente: decrece conforme la deuda baja."
+        )
+        # Preview cuota inicial
+        cuota_inicial_est = valor_total * (pct_deuda / 100)
+        st.caption(f"📌 Cuota estimada mes 1: **{fmt_cop(cuota_inicial_est)}**")
+        pct_ingreso = 0
+        cuota_fija_val = None
+        modo_base = "deuda"
     else:
         cuota_fija_val = st.number_input(
             "Cuota fija mensual ($)", min_value=0.0, value=400_000.0, step=10_000.0, format="%.0f"
         )
         pct_ingreso = 0
+        pct_deuda = 0.0
+        modo_base = "ingreso"
 
     st.markdown("---")
     st.markdown("### ⚡ Adelantos / Cesantías")
@@ -439,6 +466,8 @@ rows, summary = calculate_plan(
     aumento_cada      = aumento_cada,
     porcentaje_ingreso = pct_ingreso,
     cuota_fija        = cuota_fija_val,
+    modo_base_cuota   = modo_base,
+    porcentaje_deuda  = pct_deuda,
 )
 
 # ─── KPI CARDS ──────────────────────────────────────────────────────────────
@@ -504,11 +533,14 @@ if rows:
     df = pd.DataFrame(rows)
 
     # Format currency columns for display
-    currency_cols = ["Salario Base", "Prima", "Adelanto/Ces.",
+    currency_cols = ["Salario Base", "Prima", "Adelanto/Ces.", "Ingreso Total",
                      "Valor Cuota", "Valor Abono", "Valor Acumulado", "Saldo Restante"]
     df_display = df.drop(columns=["fecha_dt"], errors="ignore").copy()
     for col in currency_cols:
-        df_display[col] = df_display[col].apply(fmt_cop)
+        if col in df_display.columns:
+            df_display[col] = df_display[col].apply(fmt_cop)
+    if "% s/Ingreso" in df_display.columns:
+        df_display["% s/Ingreso"] = df_display["% s/Ingreso"].apply(lambda x: f"{x:.1f}%")
 
     st.dataframe(
         df_display,
@@ -520,7 +552,9 @@ if rows:
             "Salario Base":    st.column_config.TextColumn(),
             "Prima":           st.column_config.TextColumn(),
             "Adelanto/Ces.":   st.column_config.TextColumn(),
+            "Ingreso Total":   st.column_config.TextColumn(),
             "Valor Cuota":     st.column_config.TextColumn(),
+            "% s/Ingreso":     st.column_config.TextColumn(width="small"),
             "Valor Abono":     st.column_config.TextColumn(),
             "Valor Acumulado": st.column_config.TextColumn(),
             "Saldo Restante":  st.column_config.TextColumn(),
